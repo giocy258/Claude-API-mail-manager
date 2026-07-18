@@ -1,0 +1,7 @@
+LINK ALLA PIATTAFORMA GOOGLE CLOUD:
+
+https://console.cloud.google.com/apis/credentials?project=analog-marking-502715-j4&supportedpurview=project
+
+LINK ALLA PIATTAFORMA DI SVILUPPO DI CLAUDE:
+
+https://platform.claude.com/settings/workspaces/default/keys
