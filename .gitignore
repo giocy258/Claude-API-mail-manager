@@ -1,0 +1,13 @@
+# Segreti
+.env
+tools/credentials.json
+tools/token.json
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Streamlit
+.streamlit/
