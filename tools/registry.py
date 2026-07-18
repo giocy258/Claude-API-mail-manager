@@ -21,7 +21,7 @@ import json
 from typing import Any, Callable, Dict, List
 from zoneinfo import ZoneInfo
 
-from .calendar import (
+from .calendar_handler import (
     tool_delete_event,
     tool_find_availability,
     tool_force_add_event,
@@ -29,7 +29,7 @@ from .calendar import (
     tool_safe_add_event,
     tool_update_event,
 )
-from .gmail import (
+from .gmail_handler import (
     tool_find_contacts,
     tool_manage_email,
     tool_search_gmail,
