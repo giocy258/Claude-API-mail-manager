@@ -6,17 +6,6 @@ Equivalente funzionale di ADK Web, ma esegue davvero i nostri tool.
 
 Avvio:
     streamlit run app.py
-
-Struttura attesa (app.py e' nella root del progetto):
-    project/
-    ├── app.py              <-- questo file
-    ├── agent_core.py
-    ├── system_prompt.md
-    └── tools/
-        ├── __init__.py
-        ├── google_auth.py  (+ credentials.json, token.json)
-        ├── ...
-        └── registry.py
 """
 
 from __future__ import annotations
@@ -25,7 +14,7 @@ import datetime
 from zoneinfo import ZoneInfo
 
 import streamlit as st
-from streamlit_calendar import calendar
+from streamlit_calendar import calendar as calendar_widget
 
 from agent_core import AgentCore
 from tools.calendar_api import read_calendar
@@ -63,35 +52,25 @@ CUSTOM_CSS = """
 # ---------------------------------------------------------------------------
 def init_state() -> None:
     if "agent" not in st.session_state:
-        # L'agente e' pesante da costruire (legge system_prompt, valida i tool):
-        # lo creiamo una volta e lo teniamo nella sessione.
         st.session_state.agent = AgentCore()
-
     if "history" not in st.session_state:
-        # History nel formato nativo Anthropic (include blocchi tool_use/tool_result).
         st.session_state.history = []
-
     if "display_messages" not in st.session_state:
-        # Solo i messaggi testuali da mostrare in chat.
         st.session_state.display_messages = []
-
     if "calendar_dirty" not in st.session_state:
-        # Flag: True quando un tool ha modificato il calendario e la sidebar
-        # va ricaricata da Google.
         st.session_state.calendar_dirty = True
-
     if "cal_events" not in st.session_state:
         st.session_state.cal_events = []
+    # Richiesta utente in attesa di essere processata al prossimo rerun.
+    if "pending_prompt" not in st.session_state:
+        st.session_state.pending_prompt = None
 
 
 # ---------------------------------------------------------------------------
 # Caricamento eventi calendario per la sidebar
 # ---------------------------------------------------------------------------
 def load_calendar_events(days_back: int = 15, days_fwd: int = 45) -> list:
-    """
-    Legge gli eventi reali da Google Calendar e li converte nel formato
-    richiesto da streamlit-calendar (title / start / end).
-    """
+    """Legge gli eventi reali da Google Calendar per la sidebar."""
     try:
         creds = accesso()
         today = datetime.datetime.now(ROME_TZ)
@@ -106,11 +85,7 @@ def load_calendar_events(days_back: int = 15, days_fwd: int = 45) -> list:
             start = e["start"].get("dateTime", e["start"].get("date"))
             end = e["end"].get("dateTime", e["end"].get("date"))
             events.append(
-                {
-                    "title": e.get("summary", "Senza titolo"),
-                    "start": start,
-                    "end": end,
-                }
+                {"title": e.get("summary", "Senza titolo"), "start": start, "end": end}
             )
         return events
     except Exception as exc:  # noqa: BLE001
@@ -119,7 +94,7 @@ def load_calendar_events(days_back: int = 15, days_fwd: int = 45) -> list:
 
 
 # ---------------------------------------------------------------------------
-# UI
+# UI - rendering (nessun lavoro pesante qui dentro)
 # ---------------------------------------------------------------------------
 def render_header() -> None:
     st.markdown(
@@ -134,6 +109,7 @@ def render_header() -> None:
 
 
 def render_chat_history() -> None:
+    """Unico punto in cui i messaggi vengono disegnati."""
     for msg in st.session_state.display_messages:
         with st.chat_message(msg["role"], avatar=msg.get("avatar")):
             st.markdown(msg["content"])
@@ -149,7 +125,7 @@ def render_sidebar() -> None:
             st.session_state.cal_events = load_calendar_events()
             st.session_state.calendar_dirty = False
 
-        calendar(
+        calendar_widget(
             events=st.session_state.cal_events,
             options=CALENDAR_OPTIONS,
             custom_css=CUSTOM_CSS,
@@ -157,38 +133,36 @@ def render_sidebar() -> None:
         )
 
 
-def handle_user_input(prompt: str) -> None:
-    # Mostra subito il messaggio utente.
-    st.session_state.display_messages.append(
-        {"role": "user", "avatar": USER_AVATAR, "content": prompt}
-    )
-    with st.chat_message("user", avatar=USER_AVATAR):
-        st.markdown(prompt)
+# ---------------------------------------------------------------------------
+# Elaborazione della richiesta (lavoro pesante, fuori dai context manager UI)
+# ---------------------------------------------------------------------------
+def process_pending_prompt() -> None:
+    """
+    Esegue il turno agentico per la richiesta in sospeso.
+    Aggiorna SOLO lo stato: il disegno avviene in render_chat_history al rerun.
+    """
+    prompt = st.session_state.pending_prompt
+    if not prompt:
+        return
 
-    # Esegue il turno agentico. La callback mostra i tool man mano che
-    # vengono chiamati, cosi' l'utente vede che l'agente sta lavorando.
-    with st.chat_message("assistant", avatar=BOT_AVATAR):
-        with st.status("Sto elaborando la richiesta...", expanded=False) as status:
-            def on_tool_call(name: str, args: dict) -> None:
-                status.update(label=f"Uso lo strumento: {name}")
-
-            agent = st.session_state.agent
-            agent.on_tool_call = on_tool_call
+    with st.spinner("Sto elaborando la richiesta..."):
+        agent = st.session_state.agent
+        agent.on_tool_call = lambda name, args: None  # log gestito nel core
+        try:
             result = agent.run_turn(st.session_state.history, prompt)
-            status.update(label="Fatto", state="complete")
+            answer = result.text
+            calendar_changed = result.calendar_changed
+            st.session_state.history = result.messages
+        except Exception as exc:  # noqa: BLE001
+            answer = f"Si e' verificato un errore: {exc}"
+            calendar_changed = False
 
-        st.markdown(result.text)
-
-    # Aggiorna gli stati.
-    st.session_state.history = result.messages
     st.session_state.display_messages.append(
-        {"role": "assistant", "avatar": BOT_AVATAR, "content": result.text}
+        {"role": "assistant", "avatar": BOT_AVATAR, "content": answer}
     )
-
-    # Se l'agente ha toccato il calendario, la sidebar va ricaricata.
-    if result.calendar_changed:
+    st.session_state.pending_prompt = None
+    if calendar_changed:
         st.session_state.calendar_dirty = True
-        st.rerun()
 
 
 # ---------------------------------------------------------------------------
@@ -197,11 +171,24 @@ def handle_user_input(prompt: str) -> None:
 def main() -> None:
     init_state()
     render_header()
+
+    # 1. Se c'e' una richiesta in sospeso, elaborala PRIMA di disegnare la chat.
+    if st.session_state.pending_prompt:
+        process_pending_prompt()
+
+    # 2. Disegna la cronologia (punto unico di rendering dei messaggi).
     render_chat_history()
+
+    # 3. Sidebar calendario.
     render_sidebar()
 
+    # 4. Input utente: registra il messaggio e richiede un rerun.
     if prompt := st.chat_input("Scrivi una richiesta su mail o calendario..."):
-        handle_user_input(prompt)
+        st.session_state.display_messages.append(
+            {"role": "user", "avatar": USER_AVATAR, "content": prompt}
+        )
+        st.session_state.pending_prompt = prompt
+        st.rerun()
 
 
 if __name__ == "__main__":
